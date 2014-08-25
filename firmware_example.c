@@ -1,5 +1,4 @@
 #include <stdlib.h>
-#include <io.h>
 #include <avr/io.h> 
 #include <avr/interrupt.h> 
 
@@ -7,9 +6,18 @@
 #define set_bit(reg,bit) ((reg)|=(1<<(bit)))
 #define clear_bit(reg,bit) ((reg)&=~(1<<(bit)))
 
-#define CLOCK 1
-#define DISPLAY 2
-#define CALCULATOR 3
+#define CLOCK 49
+#define DISPLAY 50
+#define CALCULATOR 51
+
+
+/*TODO:
+	0) External crystal/resonator High Freq; Start-up time 258 CK + 4 ms
+
+	1) Display. Ta med dekatron speed som parameter (0 == stille)
+	3) Calculator-mode
+	4) Displaymode: Dekatron speed (ny param)
+*/
 
 
 void DisplayHH(int value);
@@ -174,36 +182,36 @@ void GlowWait(void)
 }
 
 
+//Versjon 1_2
 int Dekatron(int n)
 {
-
 	switch(n)
 	{
-		case 0:	set_bit(PORTD, 1);//001
-				set_bit(PORTD, 2);	
-				clear_bit(PORTD,3);	
+		case 0:	clear_bit(PORTE, 0);//001
+				clear_bit(PORTE, 1);	
+				set_bit(PORTE,2);	
 				GlowWait();
-				set_bit(PORTD, 1);	//011
-				clear_bit(PORTD, 2);	
-				clear_bit(PORTD, 3);	
-				GlowWait();
-				break;
-		case 1: set_bit(PORTD, 1);	//010
-				clear_bit(PORTD, 2);	
-				set_bit(PORTD, 3);	
-				GlowWait();
-			   	clear_bit(PORTD, 1);	//110
-			  	clear_bit(PORTD, 2);	
-				set_bit(PORTD, 3);	
+				clear_bit(PORTE, 0);	//011
+				set_bit(PORTE, 1);	
+				set_bit(PORTE, 2);	
 				GlowWait();
 				break;
-		case 2: clear_bit(PORTD, 1);	//100
-			 	set_bit(PORTD, 2);	
-				set_bit(PORTD, 3);	
+		case 1: clear_bit(PORTE, 0);	//010
+				  set_bit(PORTE, 1);	
+				clear_bit(PORTE, 2);	
 				GlowWait();
-				clear_bit(PORTD, 1);	//101
-				set_bit(PORTD, 2);	
-				clear_bit(PORTD, 3);	
+			   set_bit(PORTE, 0);	//110
+			  set_bit(PORTE, 1);	
+				clear_bit(PORTE, 2);	
+				GlowWait();
+				break;
+		case 2:   set_bit(PORTE, 0);	//100
+			 	clear_bit(PORTE, 1);	
+				clear_bit(PORTE, 2);	
+				GlowWait();
+				set_bit(PORTE, 0);	//101
+				clear_bit(PORTE, 1);	
+				  set_bit(PORTE, 2);	
 				GlowWait();
 				break;
 	}
@@ -213,6 +221,8 @@ int Dekatron(int n)
 
 	return n;
 }
+
+
 
 
 void TestCounting(void)
@@ -237,20 +247,26 @@ void TestCounting(void)
 
 void InitTimer(void)
 {
+	// s 121
 	TCCR1B |= (1 << CS10) | (1 << CS12); // clk/1024 prescaler
 
 	TIMSK |= (1 << OCIE1A); // Timer/Counter0 Output Compare Match Interrupt Enable
 	TCCR1B |= (1 << WGM12);
 	OCR1A = 10800; // 11059200 Mhz, prescale 1024 = >10800 => ticks/sec
+
 }
+
+
 
 
 void InitUART (void) 
 { 
-   UCSRB |= (1 << RXEN);   // Turn on the reception circuitry 
+	// Se side 162
+   UCSRB |= (1 << RXEN) | (1 << TXEN);   // Turn on the reception circuitry 
 
    UBRRL = 63; 
    UBRRH = 2; 
+
 
    UCSRB |= (1 << RXCIE); // Enable the USART Recieve Complete interrupt (USART_RXC) 
    UCSRA |= (1 << U2X); // Asynch double speed
@@ -276,102 +292,66 @@ volatile int sixteenSecondCounter = 0;
 
 
 
-SIGNAL(SIG_OUTPUT_COMPARE1A)
+ISR(TIMER1_COMPA_vect)
+//SIGNAL(SIG_OUTPUT_COMPARE1A)
 {
-	OCR1A = 10800; 
-	switch(currentCommand)
-	{
-		case CLOCK: 		Tick(1); 
-						dekatronTick = Dekatron(dekatronTick);
+	 OCR1A = 10800; 
 
-						break;
-		case CALCULATOR: break;
-		case DISPLAY :  if (DekatronSpeed != 0)
-						{
-							dekatronTick = Dekatron(dekatronTick);
-						}
-	    default: break;
-
-	}
+	Tick(1);
+	dekatronTick = Dekatron(dekatronTick);
 }
 
-
-//ISR(USART_RXC_vect) 
-SIGNAL(SIG_UART_RECV)
+// http://stackoverflow.com/questions/21560230/receiving-char-from-uart-of-avr
+ISR(UART_RX_vect) 
 { 
+	// You can connect to the clock via serial (Plug in a BlueSMiRF board)
+	// 8N1, 2400 baud
+	// Send HHMMSS + CRLF from any terminal emulator to set the display
 
 	while ( !( UCSRA & (1<<UDRE)) );
 
-	commandBuffer[cbIndex] = UDR;
+   char received; 
+   received = UDR; // Fetch the received byte value into the variable "ByteReceived" 
+   
+   while ( !( UCSRA & (1<<UDRE)) );
+   UDR = received; // ECHO
 
-
-	if (0 == cbIndex)
+	received -= 48;
+	switch(cbIndex)
 	{
-		currentCommand = commandBuffer[cbIndex];
-		switch(currentCommand)
-		{
-			case CLOCK: commandLength = 5; break;
-			case DISPLAY: commandLength = 6; break;
-			case CALCULATOR: commandLength = 4; break;
-		}
+		case 0: Hours = 10*received; 
+				Minutes = 0;
+				Seconds = 0;
+				break;
+		case 1: Hours += received; 
+				Minutes = 0;
+				Seconds = 0;
+				break;
+		case 2: Minutes = 10*received; 
+				Seconds = 0;
+				break;
+		case 3: Minutes += received; 
+				Seconds = 0;
+				break;
+		case 4: Seconds = 10*received; break;
+		case 5: Seconds += received; break;
 	}
-	cbIndex++;
+	DisplayClock();
 	
-	if (cbIndex > commandLength)
-	{
-		// execute command
-
-
-		switch(currentCommand)
-		{
-			case CLOCK: Hours = commandBuffer[1];
-					Minutes = commandBuffer[2];
-					Seconds = commandBuffer[3];
-					DisplayClock();
-
-					break;
-			case CALCULATOR: 
-			
-					break;
-			case DISPLAY:
-					Hours = commandBuffer[1];
-					Minutes = commandBuffer[2];
-					Seconds = commandBuffer[3];
-					DekatronSpeed = commandBuffer[4];
-					GenericDisplay();
-					break;
-		}
-
-
+	cbIndex++;
+	if (cbIndex > 7) // Eat CRLF
 		cbIndex = 0;
-		commandLength = 0;
-		// TODO: CRC checksum
-	}		
-
 } 
-
-
-
-
-
-
 
 int main( void )
 {
-
-
 	InitializePorts();
 
-
-/*	DisplayHH(1);
+	DisplayHH(1);
 	DisplayHL(2);
 	DisplayMH(3);
 	DisplayML(4);
-	DisplaySH(5);
-	DisplaySL(6);
-*/
-
-
+	
 	InitInterrupts();		
 
 	for (;;);
